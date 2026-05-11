@@ -4,17 +4,25 @@ import { cors } from "hono/cors";
 import {
   getPhase1KnowledgeBase,
   phase1AgentDefinitions,
+  phase2AgentDefinitions,
+  phase2ActiveRoster,
+  phase2WorkflowPlans,
   runtimeHealth
 } from "@saga-agent-ops/agent-runtime";
 import { contractVersions, sagaEmployeeRoster } from "@saga-agent-ops/shared";
 import {
   createPhase1LedgerRun,
+  createPhase2LedgerRun,
   decideApproval,
+  getCompanyState,
+  getCostDashboard,
   getLedgerSummary,
   getRun,
+  listArtifacts,
   listApprovals,
   listCostEvents,
   listHandoffs,
+  listMemoryRecords,
   listRuns,
   listSources,
   listTasks,
@@ -74,6 +82,21 @@ app.get("/agents/phase-1", (c) =>
   })
 );
 
+app.get("/agents/phase-2", (c) =>
+  c.json({
+    count: phase2AgentDefinitions.length,
+    activeRoster: phase2ActiveRoster,
+    agents: phase2AgentDefinitions
+  })
+);
+
+app.get("/workflows/phase-2/plans", (c) =>
+  c.json({
+    count: Object.keys(phase2WorkflowPlans).length,
+    plans: phase2WorkflowPlans
+  })
+);
+
 app.post("/workflows/lead-to-offer/preview", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const result = await createPhase1LedgerRun(parseWorkflowInput(body));
@@ -84,6 +107,50 @@ app.post("/workflows/lead-to-offer/preview", async (c) => {
 app.post("/workflows/lead-to-offer/run", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const result = await createPhase1LedgerRun(parseWorkflowInput(body));
+
+  return c.json(result);
+});
+
+function parsePhase2WorkflowInput(workflowType: string, body: Record<string, unknown>) {
+  const safeWorkflowType = ["lead_to_offer_v2", "weekly_ops_report", "product_scope_draft"].includes(workflowType)
+    ? (workflowType as "lead_to_offer_v2" | "weekly_ops_report" | "product_scope_draft")
+    : "lead_to_offer_v2";
+
+  return {
+    workflowType: safeWorkflowType,
+    companyUrl:
+      typeof body.companyUrl === "string" && body.companyUrl.length > 0
+        ? body.companyUrl
+        : "https://sagateknoloji.com",
+    companyName: typeof body.companyName === "string" ? body.companyName : "Saga Teknoloji",
+    targetService:
+      typeof body.targetService === "string"
+        ? body.targetService
+        : safeWorkflowType === "weekly_ops_report"
+          ? "Saga haftalik operasyon raporu"
+          : safeWorkflowType === "product_scope_draft"
+            ? "AI calisanli urun kapsam taslagi"
+            : "AI calisanli sirket isletim sistemi",
+    ...(typeof body.notes === "string" ? { notes: body.notes } : {}),
+    ...(typeof body.period === "string" ? { period: body.period } : {}),
+    ...(Array.isArray(body.completedWork)
+      ? { completedWork: body.completedWork.filter((item): item is string => typeof item === "string") }
+      : {}),
+    ...(Array.isArray(body.openApprovals)
+      ? { openApprovals: body.openApprovals.filter((item): item is string => typeof item === "string") }
+      : {}),
+    ...(Array.isArray(body.blockers)
+      ? { blockers: body.blockers.filter((item): item is string => typeof item === "string") }
+      : {}),
+    ...(body.enableWebResearch === true || process.env.SAGA_ENABLE_WEB_RESEARCH === "true"
+      ? { enableWebResearch: true }
+      : {})
+  };
+}
+
+app.post("/workflows/phase-2/:workflowType/run", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const result = await createPhase2LedgerRun(parsePhase2WorkflowInput(c.req.param("workflowType"), body));
 
   return c.json(result);
 });
@@ -122,7 +189,47 @@ app.post("/demo/phase-1/seed", async (c) => {
   });
 });
 
+app.post("/demo/phase-2/seed", async (c) => {
+  resetLedgerStore();
+
+  const runs = [];
+  runs.push(
+    await createPhase2LedgerRun({
+      workflowType: "lead_to_offer_v2",
+      companyName: "Saga Teknoloji",
+      companyUrl: "https://sagateknoloji.com",
+      targetService: "AI calisanli sirket isletim sistemi"
+    })
+  );
+  runs.push(
+    await createPhase2LedgerRun({
+      workflowType: "weekly_ops_report",
+      companyName: "Saga Teknoloji",
+      period: "2026-W20",
+      completedWork: ["Faz 1 runtime", "Faz 1.5 hardening", "Phase 2 active roster"],
+      openApprovals: ["lead_to_offer_v2 final artifact"],
+      blockers: ["Postgres/Ollama opsiyonel olarak local env bekliyor"]
+    })
+  );
+  runs.push(
+    await createPhase2LedgerRun({
+      workflowType: "product_scope_draft",
+      companyName: "Saga Teknoloji",
+      targetService: "30 calisanli AI sirket operasyon konsolu",
+      notes: "Owner local UI'da gercek sirket gibi es zamanli calisan sistem istiyor."
+    })
+  );
+
+  return c.json({
+    seeded: runs.length,
+    summary: getLedgerSummary(),
+    runIds: runs.map((item) => item.run.runId)
+  });
+});
+
 app.get("/ledger/summary", (c) => c.json(getLedgerSummary()));
+
+app.get("/company/state", (c) => c.json(getCompanyState()));
 
 app.post("/ledger/reset", (c) => c.json(resetLedgerStore()));
 
@@ -163,10 +270,26 @@ app.get("/ledger/handoffs", (c) =>
   })
 );
 
+app.get("/ledger/artifacts", (c) =>
+  c.json({
+    count: listArtifacts().length,
+    artifacts: listArtifacts()
+  })
+);
+
 app.get("/ledger/costs", (c) =>
   c.json({
     count: listCostEvents().length,
     costs: listCostEvents()
+  })
+);
+
+app.get("/ledger/cost-dashboard", (c) => c.json(getCostDashboard()));
+
+app.get("/ledger/memory", (c) =>
+  c.json({
+    count: listMemoryRecords().length,
+    memory: listMemoryRecords()
   })
 );
 

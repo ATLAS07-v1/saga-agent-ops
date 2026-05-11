@@ -18,7 +18,7 @@ The first validation slice is not the full product. It is the smallest scenario 
 
 ## Current Status
 
-Project folder initialized with planning documents, reference material, and a working Phase 1 local runtime.
+Project folder initialized with planning documents, reference material, a working Phase 1 local runtime, Phase 1.5 hardening, and a Phase 2 8-active-employee runtime.
 
 Implemented pieces:
 
@@ -41,7 +41,12 @@ Implemented pieces:
 - optional Postgres persistence mirror through `SAGA_LEDGER_STORE=postgres`
 - approval decisions: approve, reject, request revision, block
 - revision re-runs Proposal Drafter and creates artifact version v2
-- Phase 1 knowledge base and 10-case eval runner
+- Phase 2 active roster and employee definitions
+- Phase 2 workflows: `lead_to_offer_v2`, `weekly_ops_report`, `product_scope_draft`
+- per-agent cost dashboard and memory candidate tracking
+- approval feedback to governed eval/artifact memory
+- company state endpoint for real UI polling
+- Phase 1 knowledge base, 20-case Phase 1 eval, and 10-case Phase 2 eval
 
 Key references copied from ATLAS planning work:
 
@@ -75,14 +80,9 @@ docs/reference/        Imported planning references
 
 ## Next Build Slice
 
-Detailed sprint plan: `docs/backlog/2026-05-11-two-week-build-sprint.md`
+Phase 2 is now implemented. The next build slice is Phase 3: customer package, technical delivery planning, product/delivery engineering roles, and read-only customer workspace.
 
-1. Scaffold the TypeScript monorepo.
-2. Create PostgreSQL schema v0 for ledger, approvals, artifacts, costs, traces, agents, and knowledge.
-3. Implement the orchestration engine contract and agent runtime contract.
-4. Build structured handoff/message records between workers.
-5. Build the first validation workflow: `Engine -> Research -> Offer Draft -> Approval -> Weekly Report`.
-6. Run a two-week demo: URL in, research + offer draft in approval inbox, state/cost/source/trace visible.
+Phase 2 report: `docs/operations/2026-05-11-phase-2-completion-report.md`
 
 ## Local Endpoints
 
@@ -90,15 +90,23 @@ Detailed sprint plan: `docs/backlog/2026-05-11-two-week-build-sprint.md`
 - API health: `http://localhost:3001/health`
 - Full roster: `http://localhost:3001/agents`
 - Phase 1 agents: `http://localhost:3001/agents/phase-1`
+- Phase 2 agents: `http://localhost:3001/agents/phase-2`
+- Phase 2 plans: `http://localhost:3001/workflows/phase-2/plans`
 - Phase 1 preview workflow: `POST http://localhost:3001/workflows/lead-to-offer/preview`
 - Phase 1 runtime workflow: `POST http://localhost:3001/workflows/lead-to-offer/run`
-- Demo seed: `POST http://localhost:3001/demo/phase-1/seed`
+- Phase 2 workflow run: `POST http://localhost:3001/workflows/phase-2/:workflowType/run`
+- Phase 1 demo seed: `POST http://localhost:3001/demo/phase-1/seed`
+- Phase 2 demo seed: `POST http://localhost:3001/demo/phase-2/seed`
+- Company state: `http://localhost:3001/company/state`
 - Ledger summary: `http://localhost:3001/ledger/summary`
 - Ledger tasks: `http://localhost:3001/ledger/tasks`
 - Ledger runs: `http://localhost:3001/ledger/runs`
+- Ledger artifacts: `http://localhost:3001/ledger/artifacts`
 - Ledger sources: `http://localhost:3001/ledger/sources`
 - Ledger handoffs: `http://localhost:3001/ledger/handoffs`
 - Ledger costs: `http://localhost:3001/ledger/costs`
+- Ledger cost dashboard: `http://localhost:3001/ledger/cost-dashboard`
+- Ledger memory: `http://localhost:3001/ledger/memory`
 - Approval inbox: `http://localhost:3001/approvals`
 - Approval decision: `POST http://localhost:3001/approvals/:approvalId/decision`
 - Local development ledger reset: `POST http://localhost:3001/ledger/reset`
@@ -111,4 +119,7 @@ Detailed sprint plan: `docs/backlog/2026-05-11-two-week-build-sprint.md`
 - `pnpm.cmd build`
 - Browser check on `http://localhost:3000`
 
-Current root eval coverage: `Phase 1 eval passed: 20/20`.
+Current root eval coverage:
+
+- `Phase 1 eval passed: 20/20`
+- `Phase 2 eval passed: 10/10`

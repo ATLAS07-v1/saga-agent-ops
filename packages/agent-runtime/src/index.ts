@@ -77,9 +77,18 @@ export type AgentRunResult = z.infer<typeof agentRunResultSchema>;
 
 export type AgentDefinition = {
   role: EmployeeRole;
+  goal?: string;
+  backstory?: string;
   skills: string[];
   allowedTools: string[];
   memoryScope: string[];
+  memoryPolicy?: {
+    read: string[];
+    write: string[];
+    forbidden: string[];
+  };
+  outputSchemas?: string[];
+  handoffRules?: string[];
   approvalBoundaries: string[];
   evalCaseIds: string[];
 };
@@ -99,3 +108,4 @@ export * from "./providers";
 export * from "./runner";
 export * from "./tools";
 export * from "./phase-1";
+export * from "./phase-2";

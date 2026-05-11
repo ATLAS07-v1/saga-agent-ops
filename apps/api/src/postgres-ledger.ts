@@ -103,7 +103,7 @@ async function ensureSeedData(database: Db) {
         slug: agent.slug,
         name: agent.title,
         department: agent.department,
-        status: agent.phase <= 1 ? "active" : "planned",
+        status: agent.phase <= 2 ? "active" : "planned",
         phase: agent.phase,
         requiresHumanApprovalForExternalAction: agent.requiresHumanApprovalForExternalAction
       }))
@@ -131,7 +131,7 @@ export async function persistSnapshotToPostgres(snapshot: LedgerSnapshot) {
       title: snapshot.task.title,
       description: snapshot.task.description,
       state: snapshot.task.state,
-      metadata: { source: "phase-1-runtime" }
+      metadata: { source: "saga-agent-runtime", workflowType: snapshot.run.workflowType ?? "phase-1" }
     });
 
     await tx.insert(taskRuns).values({
@@ -141,7 +141,7 @@ export async function persistSnapshotToPostgres(snapshot: LedgerSnapshot) {
       state: snapshot.run.state,
       startedAt: new Date(snapshot.run.startedAt),
       ...(snapshot.run.finishedAt ? { finishedAt: new Date(snapshot.run.finishedAt) } : {}),
-      metadata: { activeAgents: snapshot.run.activeAgents }
+      metadata: { activeAgents: snapshot.run.activeAgents, workflowType: snapshot.run.workflowType ?? "phase-1" }
     });
 
     await tx.insert(taskSteps).values(
@@ -166,9 +166,13 @@ export async function persistSnapshotToPostgres(snapshot: LedgerSnapshot) {
         tenantId,
         taskId: snapshot.task.id,
         taskRunId: snapshot.run.id,
-        ...(artifact.kind === "lead_research"
-          ? { producedByAgentId: agentIdFor("lead-researcher") }
-          : { producedByAgentId: agentIdFor("proposal-drafter") }),
+        producedByAgentId: agentIdFor(
+          typeof artifact.payload.agentSlug === "string"
+            ? artifact.payload.agentSlug
+            : artifact.kind === "lead_research"
+              ? "lead-researcher"
+              : "proposal-drafter"
+        ),
         kind: artifact.kind,
         title: artifact.title,
         version: artifact.version,
@@ -187,7 +191,11 @@ export async function persistSnapshotToPostgres(snapshot: LedgerSnapshot) {
           tenantId,
           taskId: snapshot.task.id,
           artifactId: approval.artifactId,
-          requestedByAgentId: agentIdFor("proposal-drafter"),
+          requestedByAgentId: agentIdFor(
+            typeof snapshot.artifacts.find((artifact) => artifact.id === approval.artifactId)?.payload.agentSlug === "string"
+              ? (snapshot.artifacts.find((artifact) => artifact.id === approval.artifactId)?.payload.agentSlug as string)
+              : "proposal-drafter"
+          ),
           reviewerUserId: ownerUserId,
           state: approval.state,
           reason: approval.reason,
@@ -260,13 +268,13 @@ export async function persistSnapshotToPostgres(snapshot: LedgerSnapshot) {
         snapshot.memoryRecords.map((memory) => ({
           id: memory.id,
           tenantId,
-          agentId: agentIdFor("proposal-drafter"),
-          projectKey: "phase-1",
+          agentId: agentIdFor(memory.agentSlug ?? "proposal-drafter"),
+          projectKey: snapshot.run.workflowType ?? "phase-1",
           layer: memory.layer as "company" | "agent" | "project" | "task_run" | "artifact" | "eval",
           trust: memory.trust as "unverified" | "agent_generated" | "human_approved" | "source_verified" | "system_rule",
           title: memory.title,
           content: memory.content,
-          tags: ["phase-1"]
+          tags: [snapshot.run.workflowType ?? "phase-1"]
         }))
       );
     }

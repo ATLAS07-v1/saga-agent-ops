@@ -335,6 +335,266 @@ function buildProposalResult(
   });
 }
 
+function stringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function previousArtifacts(input: AgentRunInput["input"]) {
+  const artifacts = input.previousArtifacts;
+  if (!Array.isArray(artifacts)) return [];
+
+  return artifacts
+    .filter((artifact): artifact is { title?: string; kind?: string; payload?: Record<string, unknown> } =>
+      artifact !== null && typeof artifact === "object" && !Array.isArray(artifact)
+    )
+    .map((artifact) => ({
+      title: valueAsString(artifact.title, "previous artifact"),
+      kind: valueAsString(artifact.kind, "artifact"),
+      payload: asRecord(artifact.payload)
+    }));
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function buildPhase2RoleResult(
+  input: AgentRunInput,
+  provider: ProviderAdapter,
+  providerCost: { inputTokens: number; outputTokens: number; estimatedUsd: number },
+  knowledgeSources: KnowledgeSource[]
+) {
+  const companyName = normalizeCompanyName(input.input);
+  const targetService = valueAsString(input.input.targetService, "Saga ic operasyon gorevi");
+  const workflowType = valueAsString(input.input.workflowType, "phase_2_workflow");
+  const nextAgentSlug = valueAsString(input.input.nextAgentSlug, "");
+  const plannedAgents = stringArray(input.input.plannedAgents);
+  const previous = previousArtifacts(input.input);
+  const previousSummaries = previous.map((artifact) => `${artifact.kind}: ${artifact.title}`);
+
+  const roleOutputs: Record<string, { kind: string; title: string; payload: Record<string, unknown> }> = {
+    "ai-ceo-chief-of-staff": {
+      kind: "task_plan",
+      title: `${companyName} icin orkestrasyon plani`,
+      payload: {
+        workflowType,
+        objective: targetService,
+        selectedAgents: plannedAgents,
+        routingReason:
+          "Gorev, gelir/operasyon etkisi, onay riski ve gerekli uzmanliklara gore parcalandi.",
+        executionRules: [
+          "Her uzman kendi artifact'ini uretir.",
+          "Handoff ozetleri ledger'a yazilir.",
+          "Dis aksiyon, baglayici teklif, CRM write ve guvenlik testi insan onayi olmadan yapilmaz."
+        ],
+        approvalGate: "Final artifact owner approval inbox'a duser."
+      }
+    },
+    "market-intelligence-analyst": {
+      kind: "market_intelligence_brief",
+      title: `${companyName} pazar istihbarat notu`,
+      payload: {
+        marketPosition: "Saga icin teklif dili, musteri segmenti ve satin alma sinyalleri ayrildi.",
+        icpSignals: [
+          "Operasyonel tekrar var.",
+          "Yazilim, otomasyon veya guvenlik teslimati ihtiyaci var.",
+          "Izlenebilir ve onayli AI calisan modeli deger yaratabilir."
+        ],
+        competitorAngles: ["AI ajanslari", "klasik yazilim firmalari", "no-code otomasyon saglayicilari"],
+        sourceNeeds: ["firma sitesi", "hizmet sayfalari", "referanslar", "teknoloji stack sinyalleri"],
+        previousArtifacts: previousSummaries
+      }
+    },
+    "sales-strategist": {
+      kind: "sales_strategy_brief",
+      title: `${companyName} satis stratejisi`,
+      payload: {
+        positioning:
+          "Saga, musteriye sadece otomasyon degil; onayli, trace'li ve maliyet kontrollu AI operasyon sistemi onerir.",
+        valueHypothesis: `${targetService} musteri operasyon hizini artirirken kontrolsuz AI riskini azaltabilir.`,
+        discoveryQuestions: [
+          "Bugun en cok zaman alan operasyon hangi adim?",
+          "Hangi teslimatlar onay bekledigi icin gecikiyor?",
+          "Yazilim veya guvenlik risklerinde karar verici kim?"
+        ],
+        objections: [
+          "AI ciktilarina guven riski",
+          "Musteri verisi gizliligi",
+          "Maliyet kontrolu ve ROI belirsizligi"
+        ],
+        proposalAngles: ["audit sprint", "30 gunluk pilot", "managed AI workforce"],
+        previousArtifacts: previousSummaries
+      }
+    },
+    "product-manager": {
+      kind: "product_scope_brief",
+      title: `${companyName} urun kapsam taslagi`,
+      payload: {
+        problemStatement: "Gorev, kullanici degeri, kabul kriteri ve teslim kapsamindan ayrildi.",
+        userJobs: [
+          "Owner gorev verir ve hangi calisanlarin calistigini gorur.",
+          "Cikti onaya duser ve gerekirse revizyona gider.",
+          "Kaynak, maliyet, trace ve memory kaydi korunur."
+        ],
+        inScope: ["workflow plan", "artifact templates", "approval gate", "cost/source/trace visibility"],
+        outOfScope: ["otomatik musteri iletisimi", "canli deployment", "yazili onaysiz guvenlik testi"],
+        acceptanceCriteria: [
+          "Final artifact approval-ready olur.",
+          "Varsayimlar ve riskler ayri tutulur.",
+          "Her rol kendi memory adayini uretir."
+        ],
+        previousArtifacts: previousSummaries
+      }
+    },
+    "project-manager": {
+      kind: "weekly_ops_report",
+      title: "Saga haftalik operasyon raporu",
+      payload: {
+        period: valueAsString(input.input.period, "current-week"),
+        completedWork: stringArray(input.input.completedWork),
+        openApprovals: stringArray(input.input.openApprovals),
+        blockers: stringArray(input.input.blockers),
+        nextWeekPlan: [
+          "Faz 2 workflow'larini gercek gorevlerle doldur.",
+          "Onay/revizyon geri bildirimlerini eval memory'ye donustur.",
+          "Maliyet ve kaynak sinyallerini dashboard'da takip et."
+        ],
+        ownerAttention: ["bekleyen approval", "budget cap", "dusuk kaynak guveni"],
+        previousArtifacts: previousSummaries
+      }
+    },
+    "finance-cost-controller": {
+      kind: "cost_control_report",
+      title: "Faz 2 maliyet ve bilgi kontrol notu",
+      payload: {
+        estimatedRunCostUsd: providerCost.estimatedUsd,
+        budgetPolicy: "Task budget cap asilinca workflow bloke olur.",
+        marginNotes: [
+          "Teklifte baglayici fiyat yoktur.",
+          "Pilot kapsam maliyeti owner onayi olmadan taahhut edilmez.",
+          "Token ve tool maliyeti task/run/agent bazinda izlenmelidir."
+        ],
+        memoryUpdateCandidates: [
+          "Onaylanan teklif kaliplari artifact memory'ye alinabilir.",
+          "Reddedilen scope ve fiyat itirazlari eval memory olarak tutulabilir.",
+          "Dusuk guvenli kaynak pattern'leri agent memory'ye adaydir."
+        ],
+        previousArtifacts: previousSummaries,
+        knowledgeUsed: knowledgeSources.map((source) => source.id)
+      }
+    }
+  };
+
+  const fallback = {
+    kind: "phase_2_role_artifact",
+    title: `${input.agentSlug} role artifact`,
+    payload: {
+      workflowType,
+      targetService,
+      previousArtifacts: previousSummaries
+    }
+  };
+  const output = roleOutputs[input.agentSlug] ?? fallback;
+
+  const artifact: Artifact = {
+    ...output,
+    payload: {
+      ...output.payload,
+      agentSlug: input.agentSlug,
+      provider: `${provider.name}/${provider.model}`,
+      knowledgeUsed: knowledgeSources.map((source) => source.id)
+    },
+    sources: [
+      ...knowledgeSources.slice(0, 2).map((source) => ({
+        title: source.title,
+        note: source.sourceUri
+      })),
+      ...previous.slice(0, 3).map((previousArtifact) => ({
+        title: previousArtifact.title,
+        note: `Previous ${previousArtifact.kind} artifact`
+      }))
+    ]
+  };
+
+  const handoffs: HandoffMessage[] = nextAgentSlug
+    ? [
+        {
+          type: "handoff",
+          fromAgentSlug: input.agentSlug,
+          toAgentSlug: nextAgentSlug,
+          taskId: input.taskId,
+          summary: `${artifact.title} tamamlandi; siradaki calisana kontrollu handoff yapildi.`,
+          artifactIds: [`artifact_${artifact.kind}_runtime`],
+          requiresResponse: true
+        }
+      ]
+    : [
+        {
+          type: "review_request",
+          fromAgentSlug: input.agentSlug,
+          taskId: input.taskId,
+          summary: `${artifact.title} owner approval icin hazir.`,
+          artifactIds: [`artifact_${artifact.kind}_runtime`],
+          requiresResponse: true
+        }
+      ];
+
+  const memoryWrites: MemoryContext[] = [
+    {
+      layer: "agent",
+      trust: "agent_generated",
+      title: `${input.agentSlug} phase 2 memory candidate`,
+      content: `${workflowType} icinde ${artifact.kind} uretildi. Kalici agent memory icin feedback/approval gerekir.`
+    },
+    {
+      layer: "task_run",
+      trust: "agent_generated",
+      title: `${artifact.title} task memory`,
+      content: `${companyName} / ${targetService} icin ${input.agentSlug} adimi tamamlandi.`
+    }
+  ];
+
+  return agentRunResultSchema.parse({
+    status: "completed" satisfies TaskState,
+    artifacts: [artifact],
+    handoffs,
+    memoryWrites,
+    traceEvents: [
+      {
+        eventType: "agent.started",
+        message: `${input.agentSlug} Phase 2 context pack yukledi`,
+        agentSlug: input.agentSlug,
+        promptVersion: input.promptVersion
+      },
+      {
+        eventType: "provider.completed",
+        message: `${provider.name}/${provider.model} provider adapter tamamlandi`,
+        agentSlug: input.agentSlug,
+        promptVersion: input.promptVersion,
+        finishReason: "stop"
+      },
+      {
+        eventType: "artifact.created",
+        message: `${artifact.kind} artifact uretildi`,
+        agentSlug: input.agentSlug,
+        promptVersion: input.promptVersion
+      },
+      {
+        eventType: nextAgentSlug ? "handoff.created" : "approval.requested",
+        message: nextAgentSlug
+          ? `${input.agentSlug} -> ${nextAgentSlug} handoff`
+          : `${input.agentSlug} approval request hazirladi`,
+        agentSlug: input.agentSlug,
+        promptVersion: input.promptVersion
+      }
+    ],
+    cost: providerCost,
+    notes: ["phase_2_role_runtime", "external_actions_disabled"]
+  });
+}
+
 export async function runAgent(input: AgentRunInput, options: RunAgentOptions) {
   const runtimePolicy = options.runtimePolicy ?? defaultRuntimePolicy;
   const provider = options.provider ?? localDeterministicProvider;
@@ -427,6 +687,19 @@ export async function runAgent(input: AgentRunInput, options: RunAgentOptions) {
 
   if (input.agentSlug === "proposal-drafter") {
     return buildProposalResult(input, provider, providerCost, knowledgeSources);
+  }
+
+  if (
+    [
+      "ai-ceo-chief-of-staff",
+      "market-intelligence-analyst",
+      "sales-strategist",
+      "product-manager",
+      "project-manager",
+      "finance-cost-controller"
+    ].includes(input.agentSlug)
+  ) {
+    return buildPhase2RoleResult(input, provider, providerCost, knowledgeSources);
   }
 
   return agentRunResultSchema.parse({

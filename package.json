@@ -8,8 +8,9 @@
     "dev": "turbo dev",
     "build": "turbo build",
     "typecheck": "turbo typecheck",
-    "test": "pnpm test:phase1 && turbo test",
+    "test": "pnpm test:phase1 && pnpm test:phase2 && turbo test",
     "test:phase1": "tsx tools/phase1-eval.ts",
+    "test:phase2": "tsx tools/phase2-eval.ts",
     "lint": "turbo lint",
     "db:generate": "pnpm --filter @saga-agent-ops/db db:generate"
   },

@@ -183,6 +183,15 @@ button {
   background: var(--blue);
 }
 
+.status-dot.completed {
+  background: var(--green);
+}
+
+.status-dot.ready,
+.status-dot.planned {
+  background: #5d6470;
+}
+
 .ops-main {
   height: 100vh;
   overflow-y: auto;
@@ -259,6 +268,31 @@ h3 {
   grid-template-columns: 1.1fr 1.2fr 1.3fr;
   gap: 10px;
   margin-bottom: 14px;
+}
+
+.workflow-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.workflow-actions button {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  min-height: 46px;
+  padding: 10px 12px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.workflow-actions button:hover {
+  border-color: var(--teal);
+  color: #061014;
+  background: var(--teal);
 }
 
 .command-strip > div,
@@ -378,6 +412,12 @@ h3 {
   background: var(--amber);
 }
 
+.graph-node.completed span {
+  border-color: var(--green);
+  color: #061014;
+  background: var(--green);
+}
+
 .graph-node.selected span {
   outline: 3px solid rgba(255, 118, 95, 0.6);
 }
@@ -436,7 +476,7 @@ h3 {
 
 .approval-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -477,11 +517,14 @@ h3 {
   font-size: 13px;
 }
 
-.workflow-card.review {
+.workflow-card.review,
+.workflow-card.waiting_for_approval {
   border-color: rgba(242, 184, 75, 0.48);
 }
 
-.workflow-card.running {
+.workflow-card.running,
+.workflow-card.completed,
+.workflow-card.approved {
   border-color: rgba(53, 208, 181, 0.35);
 }
 
@@ -647,7 +690,8 @@ h3 {
 @media (max-width: 900px) {
   .ops-shell,
   .workspace,
-  .command-strip {
+  .command-strip,
+  .workflow-actions {
     display: block;
   }
 
@@ -677,6 +721,7 @@ h3 {
   }
 
   .command-strip > div,
+  .workflow-actions button,
   .graph-panel,
   .workflows-panel,
   .event-stream {

@@ -35,6 +35,37 @@ type LedgerApproval = {
   decisionReason?: string;
 };
 
+type CompanyState = {
+  activePhase: number;
+  activeEmployeeCount: number;
+  totalEmployeeCount: number;
+  agentStatuses: Array<{ slug: string; status: string; memoryRecords: number }>;
+  workflows: Array<{
+    taskId: string;
+    runId: string;
+    name: string;
+    workflowType: string;
+    state: string;
+    owner: string;
+    step: string;
+    progress: number;
+    agents: string[];
+    approvalState: string;
+  }>;
+  events: Array<{ eventType?: string; message?: string; agentSlug?: string; occurredAt?: string }>;
+  summary: {
+    sources: number;
+    handoffs: number;
+    pendingApprovals: number;
+    artifactVersions: number;
+    totalEstimatedUsd: number;
+  };
+  costDashboard: {
+    totalEstimatedUsd: number;
+    byAgent: Array<{ agentSlug: string; estimatedUsd: number; inputTokens: number; outputTokens: number }>;
+  };
+};
+
 const departmentNames: Record<string, string> = {
   executive: "Executive",
   revenue_strategy: "Revenue & Strategy",
@@ -78,54 +109,49 @@ const displayNames: Record<string, string> = {
   "compliance-risk-controller": "Compliance ve Risk Kontrol Uzmanı"
 };
 
-const liveWorkflows = [
+const fallbackWorkflows = [
   {
-    name: "Lead -> Araştırma -> Teklif",
-    owner: "Lead Araştırmacısı",
-    status: "running",
-    step: "Kaynaklı firma profili hazırlanıyor",
-    progress: 62,
-    agents: ["lead-researcher", "market-intelligence-analyst", "proposal-drafter"]
+    name: "Lead -> Research -> Offer v2",
+    owner: "ai-ceo-chief-of-staff",
+    state: "ready",
+    step: "Faz 2 workflow baslatilmaya hazir",
+    progress: 0,
+    agents: [
+      "ai-ceo-chief-of-staff",
+      "lead-researcher",
+      "market-intelligence-analyst",
+      "sales-strategist",
+      "proposal-drafter",
+      "finance-cost-controller"
+    ]
   },
   {
-    name: "Siber Güvenlik Ön İnceleme",
-    owner: "Uygulama Güvenliği Uzmanı",
-    status: "review",
-    step: "Bulgular insan onayı bekliyor",
-    progress: 78,
-    agents: ["security-kvkk-reviewer", "application-security-specialist", "compliance-risk-controller"]
+    name: "Weekly Saga Ops Report",
+    owner: "project-manager",
+    state: "ready",
+    step: "Haftalik rapor workflow'u hazir",
+    progress: 0,
+    agents: ["ai-ceo-chief-of-staff", "project-manager", "finance-cost-controller"]
   },
   {
-    name: "Yazılım Teslimat Planı",
-    owner: "Çözüm Mimarı",
-    status: "running",
-    step: "Backend ve DevOps handoff hazırlanıyor",
-    progress: 45,
-    agents: ["solution-architect", "backend-engineer", "devops-platform-engineer", "qa-test-automation-specialist"]
-  },
-  {
-    name: "SEO Tam Denetim",
-    owner: "SEO Stratejisti",
-    status: "queued",
-    step: "Site denetleyici sıraya alındı",
-    progress: 24,
-    agents: ["seo-strategist", "content-planner", "reporting-analyst"]
+    name: "Product Scope Draft",
+    owner: "product-manager",
+    state: "ready",
+    step: "Urun kapsam workflow'u hazir",
+    progress: 0,
+    agents: ["ai-ceo-chief-of-staff", "product-manager", "proposal-drafter", "finance-cost-controller"]
   }
 ];
 
 const graphAgents = [
   { slug: "ai-ceo-chief-of-staff", x: 50, y: 47 },
   { slug: "lead-researcher", x: 24, y: 24 },
-  { slug: "proposal-drafter", x: 20, y: 66 },
-  { slug: "solution-architect", x: 41, y: 18 },
-  { slug: "backend-engineer", x: 72, y: 22 },
-  { slug: "devops-platform-engineer", x: 80, y: 50 },
-  { slug: "application-security-specialist", x: 67, y: 74 },
-  { slug: "compliance-risk-controller", x: 45, y: 82 },
-  { slug: "seo-strategist", x: 16, y: 44 },
-  { slug: "knowledge-manager", x: 55, y: 17 },
-  { slug: "project-manager", x: 34, y: 76 },
-  { slug: "qa-test-automation-specialist", x: 85, y: 72 }
+  { slug: "market-intelligence-analyst", x: 26, y: 47 },
+  { slug: "sales-strategist", x: 24, y: 70 },
+  { slug: "proposal-drafter", x: 45, y: 78 },
+  { slug: "product-manager", x: 68, y: 24 },
+  { slug: "project-manager", x: 76, y: 55 },
+  { slug: "finance-cost-controller", x: 60, y: 78 }
 ];
 
 const handoffEvents = [
@@ -158,8 +184,11 @@ function initials(title: string) {
     .toUpperCase();
 }
 
-function statusFor(slug: string, tick: number) {
-  const active = liveWorkflows.some((workflow) => workflow.agents.includes(slug));
+function statusFor(slug: string, tick: number, companyState?: CompanyState | null) {
+  const backendStatus = companyState?.agentStatuses.find((agent) => agent.slug === slug)?.status;
+  if (backendStatus) return backendStatus;
+
+  const active = fallbackWorkflows.some((workflow) => workflow.agents.includes(slug));
   if (slug === "ai-ceo-chief-of-staff") return "routing";
   if (!active) return tick % 7 === 0 ? "syncing" : "idle";
   if (tick % 5 === 0) return "handoff";
@@ -172,6 +201,7 @@ export default function CompanyOpsConsole() {
   const [selectedSlug, setSelectedSlug] = useState("ai-ceo-chief-of-staff");
   const [phase1Run, setPhase1Run] = useState<Phase1PreviewRun | null>(null);
   const [approvalInbox, setApprovalInbox] = useState<LedgerApproval[]>([]);
+  const [companyState, setCompanyState] = useState<CompanyState | null>(null);
 
   useEffect(() => {
     const timer = window.setInterval(() => setTick((value) => value + 1), 1500);
@@ -191,30 +221,73 @@ export default function CompanyOpsConsole() {
       setApprovalInbox(approvalsData.approvals);
     }
 
-    async function loadPreviewRun() {
-      const response = await fetch("http://localhost:3001/workflows/lead-to-offer/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          companyUrl: "https://sagateknoloji.com",
-          companyName: "Saga Teknoloji",
-          targetService: "AI çalışanlı şirket işletim sistemi"
-        }),
-        signal: controller.signal
-      });
-
+    async function loadCompanyState(signal?: AbortSignal) {
+      const response = await fetch("http://localhost:3001/company/state", signal ? { signal } : undefined);
       if (!response.ok) return;
-      const data = (await response.json()) as { run: Phase1PreviewRun };
-      setPhase1Run(data.run);
-      await loadApprovals(controller.signal);
+      const data = (await response.json()) as CompanyState;
+      setCompanyState(data);
     }
 
-    void loadPreviewRun().catch(() => {
-      if (!controller.signal.aborted) setPhase1Run(null);
+    async function loadAll(signal?: AbortSignal) {
+      await Promise.all([loadCompanyState(signal), loadApprovals(signal)]);
+    }
+
+    void loadAll(controller.signal).catch(() => undefined);
+    const poll = window.setInterval(() => {
+      void loadAll().catch(() => undefined);
+    }, 1500);
+
+    return () => {
+      controller.abort();
+      window.clearInterval(poll);
+    };
+  }, []);
+
+  async function refreshCompanyState() {
+    const [stateResponse, approvalsResponse] = await Promise.all([
+      fetch("http://localhost:3001/company/state"),
+      fetch("http://localhost:3001/approvals")
+    ]);
+
+    if (stateResponse.ok) {
+      setCompanyState((await stateResponse.json()) as CompanyState);
+    }
+    if (approvalsResponse.ok) {
+      const approvalsData = (await approvalsResponse.json()) as { approvals: LedgerApproval[] };
+      setApprovalInbox(approvalsData.approvals);
+    }
+  }
+
+  async function runPhase2Workflow(workflowType: "lead_to_offer_v2" | "weekly_ops_report" | "product_scope_draft") {
+    const response = await fetch(`http://localhost:3001/workflows/phase-2/${workflowType}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        companyUrl: "https://sagateknoloji.com",
+        companyName: "Saga Teknoloji",
+        targetService:
+          workflowType === "weekly_ops_report"
+            ? "Saga haftalik operasyon raporu"
+            : workflowType === "product_scope_draft"
+              ? "30 calisanli AI sirket operasyon konsolu"
+              : "AI calisanli sirket isletim sistemi",
+        completedWork: ["Phase 1 runtime", "Phase 1.5 hardening", "Phase 2 plan runner"],
+        openApprovals: ["Faz 2 final artifact"],
+        blockers: ["Gercek provider ve Postgres local env ile opsiyonel calisir"]
+      })
     });
 
-    return () => controller.abort();
-  }, []);
+    if (!response.ok) return;
+    const data = (await response.json()) as { run: Phase1PreviewRun };
+    setPhase1Run(data.run);
+    await refreshCompanyState();
+  }
+
+  async function seedPhase2Demo() {
+    const response = await fetch("http://localhost:3001/demo/phase-2/seed", { method: "POST" });
+    if (!response.ok) return;
+    await refreshCompanyState();
+  }
 
   async function decideApproval(
     approvalId: string,
@@ -238,30 +311,30 @@ export default function CompanyOpsConsole() {
 
     if (!response.ok) return;
 
-    const approvalsResponse = await fetch("http://localhost:3001/approvals");
-    if (!approvalsResponse.ok) return;
-
-    const approvalsData = (await approvalsResponse.json()) as { approvals: LedgerApproval[] };
-    setApprovalInbox(approvalsData.approvals);
+    await refreshCompanyState();
   }
 
   const selectedAgent =
     sagaEmployeeRoster.find((agent) => agent.slug === selectedSlug) ?? sagaEmployeeRoster[0]!;
+  const activeRoster = sagaEmployeeRoster.filter((agent) => agent.phase <= 2);
 
   const roster = useMemo(
     () =>
-      sagaEmployeeRoster.map((agent) => ({
+      activeRoster.map((agent) => ({
         ...agent,
         title: displayNames[agent.slug] ?? agent.title,
-        status: statusFor(agent.slug, tick)
+        status: statusFor(agent.slug, tick, companyState)
       })),
-    [tick]
+    [activeRoster, companyState, tick]
   );
 
   const runtimeEvents =
-    phase1Run?.traceEvents.map((event) => event.message ?? event.eventType ?? "runtime event") ?? handoffEvents;
+    companyState?.events.map((event) => event.message ?? event.eventType ?? "runtime event") ??
+    phase1Run?.traceEvents.map((event) => event.message ?? event.eventType ?? "runtime event") ??
+    handoffEvents;
   const activeEvent = runtimeEvents[tick % runtimeEvents.length] ?? runtimeEvents[0]!;
-  const activeWorkflow = liveWorkflows[tick % liveWorkflows.length] ?? liveWorkflows[0]!;
+  const workflows = companyState?.workflows.length ? companyState.workflows : fallbackWorkflows;
+  const activeWorkflow = workflows[tick % workflows.length] ?? workflows[0]!;
   const currentRunApproval = phase1Run
     ? approvalInbox.find((item) => item.runId === phase1Run.runId)
     : undefined;
@@ -277,8 +350,10 @@ export default function CompanyOpsConsole() {
         ? approval.state
         : "";
   const sourceCount =
-    phase1Run?.artifacts.reduce((total, artifact) => total + (artifact.sources?.length ?? 0), 0) ?? 0;
-  const costText = phase1Run ? `$${phase1Run.cost.estimatedUsd.toFixed(4)}` : "$0.0000";
+    companyState?.summary.sources ??
+    phase1Run?.artifacts.reduce((total, artifact) => total + (artifact.sources?.length ?? 0), 0) ??
+    0;
+  const costText = `$${(companyState?.costDashboard.totalEstimatedUsd ?? phase1Run?.cost.estimatedUsd ?? 0).toFixed(4)}`;
 
   return (
     <main className="ops-shell">
@@ -317,7 +392,8 @@ export default function CompanyOpsConsole() {
             <h1>Saga Teknoloji AI şirketi çalışıyor</h1>
           </div>
           <div className="run-stats">
-            <span>30 çalışan</span>
+            <span>{companyState?.activeEmployeeCount ?? 8} aktif çalışan</span>
+            <span>{(companyState?.totalEmployeeCount ?? 30) - (companyState?.activeEmployeeCount ?? 8)} planlı çalışan</span>
             <span>6 memory katmanı</span>
             <span>{sourceCount} kaynak</span>
             <span>{costText} maliyet</span>
@@ -338,6 +414,21 @@ export default function CompanyOpsConsole() {
             <small>Son event</small>
             <strong>{activeEvent}</strong>
           </div>
+        </section>
+
+        <section className="workflow-actions" aria-label="Faz 2 workflow kontrolleri">
+          <button type="button" onClick={() => void runPhase2Workflow("lead_to_offer_v2")}>
+            Lead v2 Çalıştır
+          </button>
+          <button type="button" onClick={() => void runPhase2Workflow("weekly_ops_report")}>
+            Haftalık Rapor
+          </button>
+          <button type="button" onClick={() => void runPhase2Workflow("product_scope_draft")}>
+            Ürün Kapsamı
+          </button>
+          <button type="button" onClick={() => void seedPhase2Demo()}>
+            Faz 2 Demo Seed
+          </button>
         </section>
 
         <section className="workspace">
@@ -423,15 +514,15 @@ export default function CompanyOpsConsole() {
               ) : null}
             </section>
             <div className="workflow-list">
-              {liveWorkflows.map((workflow, index) => (
-                <article className={`workflow-card ${workflow.status}`} key={workflow.name}>
+              {workflows.map((workflow, index) => (
+                <article className={`workflow-card ${workflow.state}`} key={`${workflow.name}-${index}`}>
                   <div>
                     <strong>{workflow.name}</strong>
                     <small>{workflow.owner}</small>
                   </div>
                   <p>{workflow.step}</p>
                   <div className="progress-track">
-                    <span style={{ width: `${Math.min(workflow.progress + (tick + index) % 8, 96)}%` }} />
+                    <span style={{ width: `${Math.min(workflow.progress + (workflow.progress > 0 ? 0 : (tick + index) % 8), 100)}%` }} />
                   </div>
                 </article>
               ))}
@@ -468,8 +559,8 @@ export default function CompanyOpsConsole() {
           <h2>{displayNames[selectedAgent.slug] ?? selectedAgent.title}</h2>
           <p className="profile-subtitle">{departmentNames[selectedAgent.department]}</p>
           <div className="status-banner">
-            <span className={`status-dot ${statusFor(selectedAgent.slug, tick)}`} />
-            <strong>{statusFor(selectedAgent.slug, tick)}</strong>
+            <span className={`status-dot ${statusFor(selectedAgent.slug, tick, companyState)}`} />
+            <strong>{statusFor(selectedAgent.slug, tick, companyState)}</strong>
             <small>Faz {selectedAgent.phase}</small>
           </div>
           <div className="profile-section">

@@ -2,10 +2,15 @@ import {
   createOllamaProvider,
   getPhase1KnowledgeBase,
   phase1AgentDefinitions,
+  phase2AgentDefinitions,
+  phase2ActiveRoster,
+  runPhase2Workflow,
   runAgent,
   runPhase1Workflow,
   type Phase1PreviewInput,
-  type Phase1PreviewRun
+  type Phase1PreviewRun,
+  type Phase2WorkflowInput,
+  type Phase2WorkflowRun
 } from "@saga-agent-ops/agent-runtime";
 import { randomUUID } from "node:crypto";
 import {
@@ -42,6 +47,7 @@ export type LedgerRunRecord = {
   taskId: string;
   state: LedgerState;
   activeAgents: string[];
+  workflowType?: string;
   startedAt: string;
   finishedAt?: string;
 };
@@ -142,6 +148,7 @@ export type LedgerMemoryRecord = {
   id: string;
   taskId: string;
   runId: string;
+  agentSlug?: string;
   layer: string;
   trust: string;
   title: string;
@@ -186,6 +193,17 @@ function startedBefore(timestamp: string, ms: number) {
 
 function mapHandoffArtifactId(artifactId: string, researchArtifactId: string, proposalArtifactId: string) {
   return artifactId.includes("research") ? researchArtifactId : proposalArtifactId;
+}
+
+function mapGenericArtifactId(artifactId: string, artifacts: LedgerArtifactRecord[]) {
+  const normalized = artifactId.toLowerCase().replace(/-/g, "_");
+  const byKind = artifacts.find((artifact) => normalized.includes(artifact.kind.toLowerCase()));
+  if (byKind) return byKind.id;
+
+  const byTitle = artifacts.find((artifact) =>
+    normalized.includes(artifact.title.toLowerCase().replace(/\s+/g, "_").slice(0, 24))
+  );
+  return byTitle?.id ?? artifacts[artifacts.length - 1]?.id ?? artifactId;
 }
 
 function providerFromEnv() {
@@ -411,6 +429,220 @@ export async function createPhase1LedgerRun(input: Phase1PreviewInput) {
   };
 }
 
+export async function createPhase2LedgerRun(input: Phase2WorkflowInput) {
+  const provider = providerFromEnv();
+  const preview = await runPhase2Workflow(input, provider ? { provider } : {});
+  const timestamp = now();
+  const taskId = createId("task");
+  const runId = createId("run");
+
+  const artifacts: LedgerArtifactRecord[] = preview.artifacts.map((artifact, index) => ({
+    id: createId("artifact"),
+    taskId,
+    runId,
+    kind: artifact.kind,
+    title: artifact.title,
+    version: 1,
+    state: index === preview.artifacts.length - 1 ? "needs_review" : "draft",
+    payload: artifact.payload,
+    createdAt: timestamp
+  }));
+
+  const finalArtifact = artifacts[artifacts.length - 1];
+  const approvals: LedgerApprovalRecord[] = preview.approvals.map((approval) => {
+    const approvalId = createId("approval");
+
+    return {
+      id: approvalId,
+      taskId,
+      runId,
+      artifactId: finalArtifact?.id ?? createId("artifact_missing"),
+      artifactTitle: approval.artifactTitle,
+      state: approval.state,
+      reason: approval.reason,
+      createdAt: timestamp
+    };
+  });
+
+  const sources: LedgerSourceRecord[] = preview.artifacts.flatMap((artifact, artifactIndex) =>
+    artifact.sources.map((source) => {
+      const artifactId = artifacts[artifactIndex]?.id ?? createId("artifact_unknown");
+
+      return {
+        id: createId("source"),
+        taskId,
+        runId,
+        artifactId,
+        title: source.title,
+        ...(source.url ? { url: source.url } : {}),
+        ...(source.note ? { note: source.note } : {}),
+        ...(source.retrievedAt ? { retrievedAt: source.retrievedAt } : {}),
+        trust: source.url === input.companyUrl ? "human_supplied" : "agent_generated",
+        createdAt: timestamp
+      };
+    })
+  );
+
+  const handoffs: LedgerHandoffRecord[] = preview.handoffs.map((handoff) => ({
+    id: createId("handoff"),
+    taskId,
+    runId,
+    type: handoff.type,
+    fromAgentSlug: handoff.fromAgentSlug,
+    ...(handoff.toAgentSlug ? { toAgentSlug: handoff.toAgentSlug } : {}),
+    summary: handoff.summary,
+    artifactIds: handoff.artifactIds.map((artifactId) => mapGenericArtifactId(artifactId, artifacts)),
+    requiresResponse: handoff.requiresResponse,
+    createdAt: timestamp
+  }));
+
+  const costEvents: LedgerCostRecord[] =
+    preview.agentCosts.length > 0
+      ? preview.agentCosts.map((cost) => ({
+          id: createId("cost"),
+          taskId,
+          runId,
+          agentSlug: cost.agentSlug,
+          provider: cost.provider,
+          model: cost.model,
+          inputTokens: cost.inputTokens,
+          outputTokens: cost.outputTokens,
+          estimatedUsd: cost.estimatedUsd,
+          metadata: {
+            mode: "phase_2_agent_runtime",
+            workflowType: input.workflowType
+          },
+          createdAt: timestamp
+        }))
+      : [
+          {
+            id: createId("cost"),
+            taskId,
+            runId,
+            provider: "local-runtime",
+            model: "phase-2-runtime-aggregate",
+            inputTokens: preview.cost.inputTokens,
+            outputTokens: preview.cost.outputTokens,
+            estimatedUsd: preview.cost.estimatedUsd,
+            metadata: {
+              mode: "phase_2_aggregate",
+              workflowType: input.workflowType,
+              activeAgents: preview.activeAgents
+            },
+            createdAt: timestamp
+          }
+        ];
+
+  const stepSpacingMs = 520;
+  const steps: LedgerStepRecord[] = [
+    ...preview.taskPlan.map((step, index) => ({
+      id: createId("step"),
+      taskId,
+      runId,
+      agentSlug: step.agentSlug,
+      promptVersion: `${step.agentSlug}@2026-05-11.phase2.v1`,
+      name: step.name,
+      state: "completed" as const,
+      orderIndex: step.order,
+      createdAt: timestamp,
+      startedAt: startedBefore(timestamp, (preview.taskPlan.length - index) * stepSpacingMs),
+      finishedAt: startedBefore(timestamp, (preview.taskPlan.length - index - 1) * stepSpacingMs),
+      durationMs: stepSpacingMs
+    })),
+    {
+      id: createId("step"),
+      taskId,
+      runId,
+      agentSlug: "human-owner",
+      promptVersion: "human-gate@2026-05-11.phase2.v1",
+      name: "Owner approval",
+      state: approvals.length > 0 ? "waiting_for_approval" : "skipped",
+      orderIndex: preview.taskPlan.length + 1,
+      createdAt: timestamp
+    }
+  ];
+
+  const snapshot: LedgerSnapshot = {
+    task: {
+      id: taskId,
+      title: `${input.companyName ?? "Saga"} ${input.workflowType}`,
+      description: input.targetService ?? input.workflowType,
+      state: preview.state,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    },
+    run: {
+      id: runId,
+      taskId,
+      state: preview.state,
+      activeAgents: preview.activeAgents,
+      workflowType: input.workflowType,
+      startedAt: timestamp
+    },
+    steps,
+    artifacts,
+    sources,
+    handoffs,
+    approvals,
+    costEvents,
+    traceEvents: preview.traceEvents.map((event) => ({
+      id: createId("trace"),
+      taskId,
+      runId,
+      ...(typeof event.agentSlug === "string" ? { agentSlug: event.agentSlug } : {}),
+      ...(typeof event.promptVersion === "string" ? { promptVersion: event.promptVersion } : {}),
+      eventType: typeof event.eventType === "string" ? event.eventType : "runtime.event",
+      message: typeof event.message === "string" ? event.message : "Runtime event",
+      occurredAt: timestamp
+    })),
+    memoryRecords: preview.memoryWrites.map((memory) => ({
+      id: createId("memory"),
+      taskId,
+      runId,
+      ...(memory.agentSlug ? { agentSlug: memory.agentSlug } : {}),
+      layer: memory.layer,
+      trust: memory.trust,
+      title: memory.title,
+      content: memory.content,
+      createdAt: timestamp
+    }))
+  };
+
+  snapshots.set(runId, snapshot);
+  for (const approval of approvals) {
+    approvalIndex.set(approval.id, { runId, approvalId: approval.id });
+  }
+  await persistSnapshotToPostgres(snapshot);
+
+  const run: Phase2WorkflowRun = {
+    ...preview,
+    taskId,
+    runId,
+    approvals: approvals.map((approval) => ({
+      id: approval.id,
+      artifactTitle: approval.artifactTitle,
+      state: "pending",
+      reason: approval.reason
+    })),
+    handoffs: handoffs.map((handoff) => ({
+      type: handoff.type as "handoff" | "request_clarification" | "review_request" | "blocker" | "summary",
+      fromAgentSlug: handoff.fromAgentSlug,
+      ...(handoff.toAgentSlug ? { toAgentSlug: handoff.toAgentSlug } : {}),
+      taskId,
+      summary: handoff.summary,
+      artifactIds: handoff.artifactIds,
+      requiresResponse: handoff.requiresResponse
+    })),
+    traceEvents: snapshot.traceEvents.map((event) => asRecord(event)),
+    memoryWrites: preview.memoryWrites
+  };
+
+  return {
+    run,
+    ledger: snapshot
+  };
+}
+
 export function listTasks() {
   return Array.from(snapshots.values())
     .map((snapshot) => snapshot.task)
@@ -445,9 +677,21 @@ export function listHandoffs() {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+export function listArtifacts() {
+  return Array.from(snapshots.values())
+    .flatMap((snapshot) => snapshot.artifacts)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
 export function listCostEvents() {
   return Array.from(snapshots.values())
     .flatMap((snapshot) => snapshot.costEvents)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export function listMemoryRecords() {
+  return Array.from(snapshots.values())
+    .flatMap((snapshot) => snapshot.memoryRecords)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
@@ -632,6 +876,30 @@ export async function decideApproval(
     message: decisionReason ?? `Approval marked as ${decision}`,
     occurredAt: decidedAt
   });
+  snapshot.memoryRecords.push({
+    id: createId("memory"),
+    taskId: snapshot.task.id,
+    runId: snapshot.run.id,
+    agentSlug: "human-owner",
+    layer: decision === "approved" ? "artifact" : "eval",
+    trust: "human_approved",
+    title: `${approval.artifactTitle} approval feedback`,
+    content:
+      decision === "approved"
+        ? `Owner approved artifact. This output can be considered for approved artifact memory. Reason: ${decisionReason ?? "approved"}`
+        : `Owner marked artifact as ${decision}. Feed this back into eval memory and role improvement. Reason: ${decisionReason ?? "no reason provided"}`,
+    createdAt: decidedAt
+  });
+  snapshot.traceEvents.unshift({
+    id: createId("trace"),
+    taskId: snapshot.task.id,
+    runId: snapshot.run.id,
+    agentSlug: "human-owner",
+    promptVersion: "memory-policy@2026-05-11.phase2.v1",
+    eventType: "memory.feedback_recorded",
+    message: "Approval feedback recorded as governed memory candidate",
+    occurredAt: decidedAt
+  });
 
   await persistApprovalDecisionToPostgres(approval, snapshot);
 
@@ -661,6 +929,131 @@ export function getLedgerSummary() {
     costEvents: costEvents.length,
     artifactVersions,
     totalEstimatedUsd
+  };
+}
+
+export function getCostDashboard() {
+  const costs = listCostEvents();
+  const byAgent = new Map<string, { agentSlug: string; runs: number; estimatedUsd: number; inputTokens: number; outputTokens: number }>();
+  const byWorkflow = new Map<string, { workflowType: string; runs: number; estimatedUsd: number }>();
+
+  for (const cost of costs) {
+    const agentSlug = cost.agentSlug ?? "aggregate";
+    const existingAgent =
+      byAgent.get(agentSlug) ?? { agentSlug, runs: 0, estimatedUsd: 0, inputTokens: 0, outputTokens: 0 };
+    existingAgent.runs += 1;
+    existingAgent.estimatedUsd = Number((existingAgent.estimatedUsd + cost.estimatedUsd).toFixed(6));
+    existingAgent.inputTokens += cost.inputTokens;
+    existingAgent.outputTokens += cost.outputTokens;
+    byAgent.set(agentSlug, existingAgent);
+
+    const workflowType =
+      typeof cost.metadata.workflowType === "string"
+        ? cost.metadata.workflowType
+        : snapshots.get(cost.runId)?.run.workflowType ?? "phase_1";
+    const existingWorkflow = byWorkflow.get(workflowType) ?? { workflowType, runs: 0, estimatedUsd: 0 };
+    existingWorkflow.runs += 1;
+    existingWorkflow.estimatedUsd = Number((existingWorkflow.estimatedUsd + cost.estimatedUsd).toFixed(6));
+    byWorkflow.set(workflowType, existingWorkflow);
+  }
+
+  return {
+    totalEstimatedUsd: Number(costs.reduce((total, cost) => total + cost.estimatedUsd, 0).toFixed(6)),
+    totalInputTokens: costs.reduce((total, cost) => total + cost.inputTokens, 0),
+    totalOutputTokens: costs.reduce((total, cost) => total + cost.outputTokens, 0),
+    byAgent: Array.from(byAgent.values()).sort((a, b) => b.estimatedUsd - a.estimatedUsd),
+    byWorkflow: Array.from(byWorkflow.values()).sort((a, b) => b.estimatedUsd - a.estimatedUsd)
+  };
+}
+
+export function getCompanyState() {
+  const snapshotList = Array.from(snapshots.values()).sort((a, b) =>
+    b.task.createdAt.localeCompare(a.task.createdAt)
+  );
+  const latestSnapshot = snapshotList[0];
+  const pendingApprovals = listApprovals().filter((approval) => approval.state === "pending");
+  const agentStatuses = phase2ActiveRoster.map((agent) => {
+    const latestStep = latestSnapshot?.steps.find((step) => step.agentSlug === agent.slug);
+    const activeInLatest = latestSnapshot?.run.activeAgents.includes(agent.slug) ?? false;
+    const status =
+      agent.slug === "ai-ceo-chief-of-staff" && activeInLatest
+        ? "routing"
+        : pendingApprovals.length > 0 && activeInLatest
+          ? "review"
+          : latestStep?.state === "completed"
+            ? "completed"
+            : activeInLatest
+              ? "working"
+              : "idle";
+
+    return {
+      slug: agent.slug,
+      status,
+      phase: agent.phase,
+      department: agent.department,
+      memoryRecords: listMemoryRecords().filter((memory) => memory.agentSlug === agent.slug).length
+    };
+  });
+
+  const workflows = snapshotList.slice(0, 8).map((snapshot) => {
+    const completedSteps = snapshot.steps.filter((step) => step.state === "completed").length;
+    const totalSteps = Math.max(1, snapshot.steps.length);
+    const lastStep =
+      snapshot.steps.find((step) => step.state === "waiting_for_approval") ??
+      snapshot.steps
+        .slice()
+        .sort((a, b) => b.orderIndex - a.orderIndex)[0];
+
+    return {
+      taskId: snapshot.task.id,
+      runId: snapshot.run.id,
+      name: snapshot.task.title,
+      workflowType: snapshot.run.workflowType ?? "lead_to_offer_v1",
+      state: snapshot.run.state,
+      owner: lastStep?.agentSlug ?? snapshot.run.activeAgents[0] ?? "orchestration-engine",
+      step: lastStep?.name ?? snapshot.task.description,
+      progress: Math.round((completedSteps / totalSteps) * 100),
+      agents: snapshot.run.activeAgents,
+      approvalState: snapshot.approvals[0]?.state ?? "none"
+    };
+  });
+
+  const traceEvents = snapshotList
+    .flatMap((snapshot) => snapshot.traceEvents)
+    .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
+    .slice(0, 30);
+  const handoffEvents = snapshotList
+    .flatMap((snapshot) => snapshot.handoffs)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 20)
+    .map((handoff) => ({
+      id: handoff.id,
+      eventType: `handoff.${handoff.type}`,
+      message: `${handoff.fromAgentSlug}${handoff.toAgentSlug ? ` -> ${handoff.toAgentSlug}` : ""}: ${handoff.summary}`,
+      agentSlug: handoff.fromAgentSlug,
+      occurredAt: handoff.createdAt
+    }));
+  const memoryEvents = listMemoryRecords()
+    .slice(0, 20)
+    .map((memory) => ({
+      id: memory.id,
+      eventType: `memory.${memory.layer}`,
+      message: `${memory.title}: ${memory.content}`,
+      agentSlug: memory.agentSlug,
+      occurredAt: memory.createdAt
+    }));
+
+  return {
+    activePhase: 2,
+    activeEmployeeCount: phase2ActiveRoster.length,
+    totalEmployeeCount: 30,
+    agentStatuses,
+    workflows,
+    events: [...traceEvents, ...handoffEvents, ...memoryEvents]
+      .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
+      .slice(0, 30),
+    summary: getLedgerSummary(),
+    costDashboard: getCostDashboard()
   };
 }
 
