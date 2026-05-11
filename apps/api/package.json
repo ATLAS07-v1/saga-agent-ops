@@ -13,8 +13,11 @@
   "dependencies": {
     "@hono/node-server": "latest",
     "@saga-agent-ops/agent-runtime": "workspace:*",
+    "@saga-agent-ops/db": "workspace:*",
     "@saga-agent-ops/shared": "workspace:*",
+    "drizzle-orm": "latest",
     "hono": "latest",
+    "postgres": "latest",
     "zod": "latest"
   },
   "devDependencies": {

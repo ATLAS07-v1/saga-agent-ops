@@ -17,6 +17,7 @@ import {
   type RuntimePolicy
 } from "./policies";
 import { localDeterministicProvider, type ProviderAdapter } from "./providers";
+import { fetchCompanyWebsiteSummary, type WebResearchResult } from "./tools";
 
 export type RunAgentOptions = {
   definition: AgentDefinition;
@@ -65,7 +66,8 @@ function buildLeadResearchResult(
   input: AgentRunInput,
   provider: ProviderAdapter,
   providerCost: { inputTokens: number; outputTokens: number; estimatedUsd: number },
-  knowledgeSources: KnowledgeSource[]
+  knowledgeSources: KnowledgeSource[],
+  webResearch?: WebResearchResult
 ) {
   const companyName = normalizeCompanyName(input.input);
   const companyUrl = valueAsString(input.input.companyUrl, "");
@@ -100,6 +102,13 @@ function buildLeadResearchResult(
           claim: "Saga bilgi tabani teklif sinirlari ve onay kurallari icin kullanildi.",
           sourceUrl: "docs/knowledge/phase-1",
           confidence: "high"
+        },
+        {
+          claim: webResearch?.ok
+            ? `Company website read-only tool returned ${webResearch.title ?? "a page"}`
+            : "Company website read-only tool did not return verified page content.",
+          sourceUrl: webResearch?.url ?? (companyUrl || "company_website.read"),
+          confidence: webResearch?.ok ? "medium" : "low"
         }
       ],
       painPoints: [
@@ -119,12 +128,27 @@ function buildLeadResearchResult(
       risks: [
         ...(sourceWarning ? [sourceWarning] : []),
         ...(privacyRisk ? ["personal_data_request_blocked"] : []),
+        ...(webResearch && !webResearch.ok ? [`web_research_${webResearch.error ?? "unverified"}`] : []),
         "Dis aksiyon ve CRM write insan onayi olmadan yapilamaz."
       ],
       handoffSummary: `${companyName} icin ${targetService} odakli teklif taslagi hazirlanabilir; kaynak guven notlari korunmali.`,
+      toolResults: webResearch ? [webResearch] : [],
       knowledgeUsed: knowledgeSources.map((source) => source.id)
     },
-    sources: sourceFromInput(input.input)
+    sources: [
+      ...sourceFromInput(input.input),
+      ...(webResearch
+        ? [
+            {
+              title: webResearch.ok ? "Read-only company website summary" : "Read-only company website attempt",
+              url: webResearch.url,
+              note: webResearch.ok
+                ? `status=${webResearch.status}; title=${webResearch.title ?? "not_found"}`
+                : `error=${webResearch.error ?? "unknown"}`
+            }
+          ]
+        : [])
+    ]
   };
 
   const handoff: HandoffMessage = {
@@ -159,6 +183,14 @@ function buildLeadResearchResult(
       {
         eventType: "provider.completed",
         message: `${provider.name}/${provider.model} provider adapter tamamlandi`,
+        agentSlug: input.agentSlug,
+        promptVersion: input.promptVersion
+      },
+      {
+        eventType: webResearch?.ok ? "tool.completed" : "tool.skipped_or_failed",
+        message: webResearch
+          ? `company_website.read ${webResearch.ok ? "completed" : "failed"}`
+          : "company_website.read not requested",
         agentSlug: input.agentSlug,
         promptVersion: input.promptVersion
       },
@@ -383,7 +415,14 @@ export async function runAgent(input: AgentRunInput, options: RunAgentOptions) {
   };
 
   if (input.agentSlug === "lead-researcher") {
-    return buildLeadResearchResult(input, provider, providerCost, knowledgeSources);
+    const companyUrl = typeof input.input.companyUrl === "string" ? input.input.companyUrl : "";
+    const enableWebResearch = input.input.enableWebResearch === true;
+    const webResearch =
+      enableWebResearch && options.definition.allowedTools.includes("company_website.read")
+        ? await fetchCompanyWebsiteSummary(companyUrl)
+        : undefined;
+
+    return buildLeadResearchResult(input, provider, providerCost, knowledgeSources, webResearch);
   }
 
   if (input.agentSlug === "proposal-drafter") {

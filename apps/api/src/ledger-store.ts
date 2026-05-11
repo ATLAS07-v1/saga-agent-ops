@@ -1,8 +1,18 @@
 import {
+  createOllamaProvider,
+  getPhase1KnowledgeBase,
+  phase1AgentDefinitions,
+  runAgent,
   runPhase1Workflow,
   type Phase1PreviewInput,
   type Phase1PreviewRun
 } from "@saga-agent-ops/agent-runtime";
+import { randomUUID } from "node:crypto";
+import {
+  persistApprovalDecisionToPostgres,
+  persistSnapshotToPostgres,
+  postgresLedgerMode
+} from "./postgres-ledger";
 
 type LedgerState =
   | "created"
@@ -156,8 +166,8 @@ const snapshots = new Map<string, LedgerSnapshot>();
 const approvalIndex = new Map<string, { runId: string; approvalId: string }>();
 
 function createId(prefix: string) {
-  const randomPart = Math.random().toString(36).slice(2, 8);
-  return `${prefix}_${Date.now().toString(36)}_${randomPart}`;
+  void prefix;
+  return randomUUID();
 }
 
 function now() {
@@ -178,8 +188,18 @@ function mapHandoffArtifactId(artifactId: string, researchArtifactId: string, pr
   return artifactId.includes("research") ? researchArtifactId : proposalArtifactId;
 }
 
+function providerFromEnv() {
+  if (process.env.SAGA_LLM_PROVIDER !== "ollama") return undefined;
+
+  return createOllamaProvider({
+    ...(process.env.OLLAMA_BASE_URL ? { endpoint: process.env.OLLAMA_BASE_URL } : {}),
+    ...(process.env.OLLAMA_MODEL ? { model: process.env.OLLAMA_MODEL } : {})
+  });
+}
+
 export async function createPhase1LedgerRun(input: Phase1PreviewInput) {
-  const preview = await runPhase1Workflow(input);
+  const provider = providerFromEnv();
+  const preview = await runPhase1Workflow(input, provider ? { provider } : {});
   const timestamp = now();
   const taskId = createId("task");
   const runId = createId("run");
@@ -360,6 +380,7 @@ export async function createPhase1LedgerRun(input: Phase1PreviewInput) {
   for (const approval of approvals) {
     approvalIndex.set(approval.id, { runId, approvalId: approval.id });
   }
+  await persistSnapshotToPostgres(snapshot);
 
   const run: Phase1PreviewRun = {
     ...preview,
@@ -430,7 +451,7 @@ export function listCostEvents() {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export function decideApproval(
+export async function decideApproval(
   approvalId: string,
   decision: ApprovalDecision,
   decisionReason?: string,
@@ -459,13 +480,52 @@ export function decideApproval(
   }
 
   if (decision === "revision_requested" && artifact) {
+    const researchArtifact = snapshot.artifacts.find((item) => item.kind === "lead_research");
+    const provider = providerFromEnv();
+    const proposalResult = await runAgent(
+      {
+        tenantId: "saga-local",
+        taskId: snapshot.task.id,
+        runId: snapshot.run.id,
+        agentSlug: "proposal-drafter",
+        promptVersion: "proposal-drafter@2026-05-11.revision.v1",
+        input: {
+          researchArtifact,
+          researchSummary:
+            typeof researchArtifact?.payload.handoffSummary === "string"
+              ? researchArtifact.payload.handoffSummary
+              : "Revision requested from approval inbox.",
+          targetService: snapshot.task.description,
+          constraints: ["revision_requested", decisionReason ?? "owner requested revision"]
+        },
+        memoryContext: snapshot.memoryRecords.map((memory) => ({
+          layer: memory.layer as "company" | "agent" | "project" | "task_run" | "artifact" | "eval",
+          trust: memory.trust as "unverified" | "agent_generated" | "human_approved" | "source_verified" | "system_rule",
+          title: memory.title,
+          content: memory.content
+        })),
+        budget: {
+          maxUsd: 0.05,
+          maxSteps: 4
+        }
+      },
+      {
+        definition: phase1AgentDefinitions[1]!,
+        knowledgeSources: getPhase1KnowledgeBase(),
+        ...(provider ? { provider } : {})
+      }
+    );
+    const nextArtifact = proposalResult.artifacts[0];
     const revisionArtifact: LedgerArtifactRecord = {
-      ...artifact,
       id: createId("artifact_revision"),
+      taskId: snapshot.task.id,
+      runId: snapshot.run.id,
+      kind: nextArtifact?.kind ?? artifact.kind,
+      title: nextArtifact?.title ?? artifact.title,
       version: artifact.version + 1,
-      state: "draft",
+      state: "needs_review",
       payload: {
-        ...artifact.payload,
+        ...(nextArtifact?.payload ?? artifact.payload),
         revisionRequest: {
           requestedAt: decidedAt,
           reviewer,
@@ -474,13 +534,84 @@ export function decideApproval(
       },
       createdAt: decidedAt
     };
+
     snapshot.artifacts.push(revisionArtifact);
+    if (nextArtifact) {
+      for (const source of nextArtifact.sources) {
+        snapshot.sources.push({
+          id: createId("source"),
+          taskId: snapshot.task.id,
+          runId: snapshot.run.id,
+          artifactId: revisionArtifact.id,
+          title: source.title,
+          ...(source.url ? { url: source.url } : {}),
+          ...(source.note ? { note: source.note } : {}),
+          ...(source.retrievedAt ? { retrievedAt: source.retrievedAt } : {}),
+          trust: "agent_generated",
+          createdAt: decidedAt
+        });
+      }
+    }
+    snapshot.handoffs.push(
+      ...proposalResult.handoffs.map((handoff) => ({
+        id: createId("handoff"),
+        taskId: snapshot.task.id,
+        runId: snapshot.run.id,
+        type: handoff.type,
+        fromAgentSlug: handoff.fromAgentSlug,
+        ...(handoff.toAgentSlug ? { toAgentSlug: handoff.toAgentSlug } : {}),
+        summary: handoff.summary,
+        artifactIds: [revisionArtifact.id],
+        requiresResponse: handoff.requiresResponse,
+        createdAt: decidedAt
+      }))
+    );
+    snapshot.costEvents.push({
+      id: createId("cost"),
+      taskId: snapshot.task.id,
+      runId: snapshot.run.id,
+      agentSlug: "proposal-drafter",
+      provider: provider?.name ?? "local-runtime",
+      model: provider?.model ?? "phase-1-deterministic-worker",
+      inputTokens: proposalResult.cost.inputTokens,
+      outputTokens: proposalResult.cost.outputTokens,
+      estimatedUsd: proposalResult.cost.estimatedUsd,
+      metadata: {
+        mode: "revision_loop",
+        reason: decisionReason
+      },
+      createdAt: decidedAt
+    });
+    snapshot.memoryRecords.push(
+      ...proposalResult.memoryWrites.map((memory) => ({
+        id: createId("memory"),
+        taskId: snapshot.task.id,
+        runId: snapshot.run.id,
+        layer: memory.layer,
+        trust: memory.trust,
+        title: memory.title,
+        content: memory.content,
+        createdAt: decidedAt
+      }))
+    );
+    snapshot.traceEvents.unshift(
+      ...proposalResult.traceEvents.map((event) => ({
+        id: createId("trace"),
+        taskId: snapshot.task.id,
+        runId: snapshot.run.id,
+        ...(typeof event.agentSlug === "string" ? { agentSlug: event.agentSlug } : {}),
+        ...(typeof event.promptVersion === "string" ? { promptVersion: event.promptVersion } : {}),
+        eventType: typeof event.eventType === "string" ? event.eventType : "revision.runtime_event",
+        message: typeof event.message === "string" ? event.message : "Revision runtime event",
+        occurredAt: decidedAt
+      }))
+    );
     snapshot.traceEvents.unshift({
       id: createId("trace"),
       taskId: snapshot.task.id,
       runId: snapshot.run.id,
       agentSlug: "proposal-drafter",
-      promptVersion: "proposal-drafter@2026-05-11.v1",
+      promptVersion: "proposal-drafter@2026-05-11.revision.v1",
       eventType: "artifact.version_created",
       message: `Revision artifact v${revisionArtifact.version} created`,
       occurredAt: decidedAt
@@ -502,6 +633,8 @@ export function decideApproval(
     occurredAt: decidedAt
   });
 
+  await persistApprovalDecisionToPostgres(approval, snapshot);
+
   return approval;
 }
 
@@ -518,7 +651,7 @@ export function getLedgerSummary() {
   const totalEstimatedUsd = costEvents.reduce((total, event) => total + event.estimatedUsd, 0);
 
   return {
-    storageMode: "local-memory",
+    storageMode: postgresLedgerMode(),
     tasks: tasks.length,
     runs: snapshots.size,
     pendingApprovals: approvals.filter((approval) => approval.state === "pending").length,

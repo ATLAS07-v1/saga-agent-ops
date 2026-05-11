@@ -43,7 +43,10 @@ function parseWorkflowInput(body: Record<string, unknown>) {
       typeof body.targetService === "string"
         ? body.targetService
         : "AI calisanli sirket isletim sistemi",
-    ...(typeof body.notes === "string" ? { notes: body.notes } : {})
+    ...(typeof body.notes === "string" ? { notes: body.notes } : {}),
+    ...(body.enableWebResearch === true || process.env.SAGA_ENABLE_WEB_RESEARCH === "true"
+      ? { enableWebResearch: true }
+      : {})
   };
 }
 
@@ -182,7 +185,7 @@ app.post("/approvals/:approvalId/decision", async (c) => {
     return c.json({ error: "invalid_decision" }, 400);
   }
 
-  const approval = decideApproval(
+  const approval = await decideApproval(
     c.req.param("approvalId"),
     decision as "approved" | "rejected" | "revision_requested" | "blocked",
     typeof body.reason === "string" ? body.reason : undefined,

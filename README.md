@@ -33,11 +33,14 @@ Implemented pieces:
 - Phase 1 Lead Researcher and Proposal Drafter definitions
 - Phase 1 `runAgent` runtime contract
 - provider adapter interface with local deterministic provider
+- optional Ollama provider through `SAGA_LLM_PROVIDER=ollama`
 - retry, timeout, budget cap, and tool allowlist policy
+- read-only company website research tool behind `SAGA_ENABLE_WEB_RESEARCH=true`
 - Phase 1 Researcher -> Drafter -> Approval runtime workflow
 - local ledger records for tasks, runs, steps, artifacts, sources, handoffs, costs, traces, memory, and approvals
+- optional Postgres persistence mirror through `SAGA_LEDGER_STORE=postgres`
 - approval decisions: approve, reject, request revision, block
-- revision creates artifact version v2
+- revision re-runs Proposal Drafter and creates artifact version v2
 - Phase 1 knowledge base and 10-case eval runner
 
 Key references copied from ATLAS planning work:
@@ -107,3 +110,5 @@ Detailed sprint plan: `docs/backlog/2026-05-11-two-week-build-sprint.md`
 - `pnpm.cmd test`
 - `pnpm.cmd build`
 - Browser check on `http://localhost:3000`
+
+Current root eval coverage: `Phase 1 eval passed: 20/20`.

@@ -6,6 +6,7 @@ import type {
   MemoryContext
 } from "./index";
 import { getPhase1KnowledgeBase } from "./knowledge";
+import type { ProviderAdapter } from "./providers";
 import { runAgent } from "./runner";
 
 const leadResearcherRole = sagaEmployeeRoster.find(
@@ -79,6 +80,7 @@ export type Phase1PreviewInput = {
   companyName?: string;
   targetService?: string;
   notes?: string;
+  enableWebResearch?: boolean;
 };
 
 export type Phase1PreviewRun = {
@@ -114,7 +116,10 @@ function normalizeCompanyName(input: Phase1PreviewInput) {
   }
 }
 
-export async function runPhase1Workflow(input: Phase1PreviewInput): Promise<Phase1PreviewRun> {
+export async function runPhase1Workflow(
+  input: Phase1PreviewInput,
+  options: { provider?: ProviderAdapter } = {}
+): Promise<Phase1PreviewRun> {
   const taskId = "task_phase1_runtime";
   const runId = "run_phase1_runtime";
   const targetService = input.targetService ?? "AI operasyon ve otomasyon on analizi";
@@ -131,7 +136,8 @@ export async function runPhase1Workflow(input: Phase1PreviewInput): Promise<Phas
         companyUrl: input.companyUrl,
         ...(input.companyName ? { companyName: input.companyName } : {}),
         targetService,
-        ...(input.notes ? { notes: input.notes } : {})
+        ...(input.notes ? { notes: input.notes } : {}),
+        ...(input.enableWebResearch ? { enableWebResearch: true } : {})
       },
       memoryContext: [
         {
@@ -149,7 +155,8 @@ export async function runPhase1Workflow(input: Phase1PreviewInput): Promise<Phas
     },
     {
       definition: phase1AgentDefinitions[0]!,
-      knowledgeSources
+      knowledgeSources,
+      ...(options.provider ? { provider: options.provider } : {})
     }
   );
 
@@ -207,7 +214,8 @@ export async function runPhase1Workflow(input: Phase1PreviewInput): Promise<Phas
     },
     {
       definition: phase1AgentDefinitions[1]!,
-      knowledgeSources
+      knowledgeSources,
+      ...(options.provider ? { provider: options.provider } : {})
     }
   );
 

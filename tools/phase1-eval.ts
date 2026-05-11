@@ -1,8 +1,17 @@
 import {
   phase1AgentDefinitions,
+  type ProviderAdapter,
   runAgent,
   runPhase1Workflow
 } from "@saga-agent-ops/agent-runtime";
+import {
+  createPhase1LedgerRun,
+  decideApproval,
+  getLedgerSummary,
+  getRun,
+  listApprovals,
+  resetLedgerStore
+} from "../apps/api/src/ledger-store";
 
 type EvalCase = {
   id: string;
@@ -18,6 +27,7 @@ async function assertWorkflowCase(input: {
   companyName?: string;
   targetService: string;
   notes?: string;
+  enableWebResearch?: boolean;
 }) {
   const run = await runPhase1Workflow(input);
   const sourceCount = run.artifacts.reduce((total, artifact) => total + artifact.sources.length, 0);
@@ -173,6 +183,235 @@ const evalCases: EvalCase[] = [
         companyName: "AppSec Example",
         targetService: "application security review"
       })
+  },
+  {
+    id: "phase1.web-research-tool-failure-is-contained",
+    run: async () => {
+      const run = await runPhase1Workflow({
+        companyUrl: "http://127.0.0.1:9",
+        companyName: "Closed Port Lead",
+        targetService: "AI automation audit",
+        enableWebResearch: true
+      });
+      const research = run.artifacts.find((artifact) => artifact.kind === "lead_research");
+      assert(research, "research artifact missing");
+      assert(Array.isArray(research.payload.toolResults), "tool results missing");
+      assert(run.traceEvents.some((event) => event.eventType === "tool.skipped_or_failed"), "tool failure trace missing");
+    }
+  },
+  {
+    id: "phase1.provider-retry-recovers",
+    run: async () => {
+      let attempts = 0;
+      const flakyProvider: ProviderAdapter = {
+        name: "eval-flaky",
+        model: "retry-once",
+        async generate() {
+          attempts += 1;
+          if (attempts === 1) throw new Error("forced_retry");
+          return {
+            text: "ok",
+            inputTokens: 10,
+            outputTokens: 5,
+            estimatedUsd: 0.000001,
+            finishReason: "stop"
+          };
+        }
+      };
+      const result = await runAgent(
+        {
+          tenantId: "eval",
+          taskId: "eval_retry",
+          runId: "eval_retry_run",
+          agentSlug: "lead-researcher",
+          promptVersion: "lead-researcher@eval",
+          input: {
+            companyUrl: "https://retry.example.com",
+            targetService: "AI automation audit"
+          },
+          memoryContext: [],
+          budget: {
+            maxUsd: 0.05,
+            maxSteps: 2
+          }
+        },
+        {
+          definition: phase1AgentDefinitions[0]!,
+          provider: flakyProvider
+        }
+      );
+      assert(result.status === "completed", "retry should recover provider call");
+      assert(attempts === 2, "provider should be attempted twice");
+    }
+  },
+  {
+    id: "phase1.provider-timeout-fails",
+    run: async () => {
+      const slowProvider: ProviderAdapter = {
+        name: "eval-slow",
+        model: "timeout",
+        async generate() {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          return {
+            text: "late",
+            inputTokens: 1,
+            outputTokens: 1,
+            estimatedUsd: 0,
+            finishReason: "stop"
+          };
+        }
+      };
+      let failed = false;
+      try {
+        await runAgent(
+          {
+            tenantId: "eval",
+            taskId: "eval_timeout",
+            runId: "eval_timeout_run",
+            agentSlug: "lead-researcher",
+            promptVersion: "lead-researcher@eval",
+            input: {
+              companyUrl: "https://timeout.example.com"
+            },
+            memoryContext: [],
+            budget: {
+              maxUsd: 0.05,
+              maxSteps: 1
+            }
+          },
+          {
+            definition: phase1AgentDefinitions[0]!,
+            provider: slowProvider,
+            runtimePolicy: {
+              timeoutMs: 5,
+              retry: { maxAttempts: 1, backoffMs: 1 },
+              maxToolCalls: 1
+            }
+          }
+        );
+      } catch {
+        failed = true;
+      }
+      assert(failed, "provider timeout should fail loudly");
+    }
+  },
+  {
+    id: "phase1.ledger-run-persists-summary",
+    run: async () => {
+      resetLedgerStore();
+      await createPhase1LedgerRun({
+        companyUrl: "https://ledger.example.com",
+        companyName: "Ledger Example",
+        targetService: "AI automation audit"
+      });
+      const summary = getLedgerSummary();
+      assert(summary.tasks === 1, "ledger task count should be 1");
+      assert(summary.handoffs >= 2, "ledger handoffs missing");
+      assert(summary.costEvents >= 1, "ledger cost missing");
+      assert(summary.sources >= 2, "ledger sources missing");
+    }
+  },
+  {
+    id: "phase1.approval-approve-state",
+    run: async () => {
+      resetLedgerStore();
+      await createPhase1LedgerRun({
+        companyUrl: "https://approve.example.com",
+        companyName: "Approve Example",
+        targetService: "AI automation audit"
+      });
+      const approval = listApprovals()[0];
+      assert(approval, "approval missing");
+      await decideApproval(approval.id, "approved", "eval approved", "eval-owner");
+      const summary = getLedgerSummary();
+      assert(summary.pendingApprovals === 0, "pending approvals should be zero");
+      assert(summary.decidedApprovals === 1, "decided approval count should be one");
+    }
+  },
+  {
+    id: "phase1.approval-reject-state",
+    run: async () => {
+      resetLedgerStore();
+      await createPhase1LedgerRun({
+        companyUrl: "https://reject.example.com",
+        companyName: "Reject Example",
+        targetService: "AI automation audit"
+      });
+      const approval = listApprovals()[0];
+      assert(approval, "approval missing");
+      const decided = await decideApproval(approval.id, "rejected", "eval rejected", "eval-owner");
+      assert(decided?.state === "rejected", "approval should be rejected");
+    }
+  },
+  {
+    id: "phase1.approval-block-state",
+    run: async () => {
+      resetLedgerStore();
+      const created = await createPhase1LedgerRun({
+        companyUrl: "https://block.example.com",
+        companyName: "Block Example",
+        targetService: "AI automation audit"
+      });
+      const approval = listApprovals()[0];
+      assert(approval, "approval missing");
+      await decideApproval(approval.id, "blocked", "eval blocked", "eval-owner");
+      const run = getRun(created.run.runId);
+      assert(run?.task.state === "blocked", "task should be blocked");
+      assert(run.run.state === "blocked", "run should be blocked");
+    }
+  },
+  {
+    id: "phase1.revision-loop-creates-v2",
+    run: async () => {
+      resetLedgerStore();
+      const created = await createPhase1LedgerRun({
+        companyUrl: "https://revision.example.com",
+        companyName: "Revision Example",
+        targetService: "AI automation audit"
+      });
+      const approval = listApprovals()[0];
+      assert(approval, "approval missing");
+      await decideApproval(approval.id, "revision_requested", "tighten scope", "eval-owner");
+      const run = getRun(created.run.runId);
+      assert(run, "run missing");
+      assert(run.artifacts.some((artifact) => artifact.version === 2), "revision artifact v2 missing");
+      assert(run.costEvents.length >= 2, "revision rerun cost event missing");
+      assert(
+        run.traceEvents.some((event) => event.eventType === "artifact.version_created"),
+        "revision version trace missing"
+      );
+    }
+  },
+  {
+    id: "phase1.duplicate-runs-have-distinct-ids",
+    run: async () => {
+      resetLedgerStore();
+      const first = await createPhase1LedgerRun({
+        companyUrl: "https://duplicate.example.com",
+        companyName: "Duplicate Example",
+        targetService: "AI automation audit"
+      });
+      const second = await createPhase1LedgerRun({
+        companyUrl: "https://duplicate.example.com",
+        companyName: "Duplicate Example",
+        targetService: "AI automation audit"
+      });
+      assert(first.run.runId !== second.run.runId, "duplicate runs should have distinct ids");
+      assert(getLedgerSummary().tasks === 2, "duplicate run task count should be 2");
+    }
+  },
+  {
+    id: "phase1.memory-records-created",
+    run: async () => {
+      resetLedgerStore();
+      const created = await createPhase1LedgerRun({
+        companyUrl: "https://memory.example.com",
+        companyName: "Memory Example",
+        targetService: "AI automation audit"
+      });
+      const run = getRun(created.run.runId);
+      assert(run?.memoryRecords.length && run.memoryRecords.length >= 2, "memory records missing");
+    }
   }
 ];
 

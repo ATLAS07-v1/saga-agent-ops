@@ -97,4 +97,5 @@ export * from "./knowledge";
 export * from "./policies";
 export * from "./providers";
 export * from "./runner";
+export * from "./tools";
 export * from "./phase-1";

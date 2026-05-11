@@ -26,12 +26,21 @@ importers:
       '@saga-agent-ops/agent-runtime':
         specifier: workspace:*
         version: link:../../packages/agent-runtime
+      '@saga-agent-ops/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@saga-agent-ops/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      drizzle-orm:
+        specifier: latest
+        version: 0.45.2(postgres@3.4.9)
       hono:
         specifier: latest
         version: 4.12.18
+      postgres:
+        specifier: latest
+        version: 3.4.9
       zod:
         specifier: latest
         version: 4.4.3
@@ -78,7 +87,7 @@ importers:
     dependencies:
       drizzle-orm:
         specifier: latest
-        version: 0.45.2
+        version: 0.45.2(postgres@3.4.9)
     devDependencies:
       '@types/node':
         specifier: latest
@@ -988,6 +997,10 @@ packages:
     resolution: {integrity: sha512-PS08Iboia9mts/2ygV3eLpY5ghnUcfLV/EXTOW1E2qYxJKGGBUtNjN76FYHnMs36RmARn41bC0AZmn+rR0OVpQ==}
     engines: {node: ^10 || ^12 || >=14}
 
+  postgres@3.4.9:
+    resolution: {integrity: sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw==}
+    engines: {node: '>=12'}
+
   react-dom@19.2.6:
     resolution: {integrity: sha512-0prMI+hvBbPjsWnxDLxlCGyM8PN6UuWjEUCYmZhO67xIV9Xasa/r/vDnq+Xyq4Lo27g8QSbO5YzARu0D1Sps3g==}
     peerDependencies:
@@ -1481,7 +1494,9 @@ snapshots:
       esbuild: 0.25.12
       tsx: 4.21.0
 
-  drizzle-orm@0.45.2: {}
+  drizzle-orm@0.45.2(postgres@3.4.9):
+    optionalDependencies:
+      postgres: 3.4.9
 
   esbuild@0.18.20:
     optionalDependencies:
@@ -1608,6 +1623,8 @@ snapshots:
       nanoid: 3.3.12
       picocolors: 1.1.1
       source-map-js: 1.2.1
+
+  postgres@3.4.9: {}
 
   react-dom@19.2.6(react@19.2.6):
     dependencies:
