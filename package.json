@@ -1,0 +1,24 @@
+{
+  "name": "saga-agent-ops",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Saga Teknoloji AI employee control plane.",
+  "packageManager": "pnpm@10.28.2",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "typecheck": "turbo typecheck",
+    "test": "pnpm test:phase1 && turbo test",
+    "test:phase1": "tsx tools/phase1-eval.ts",
+    "lint": "turbo lint",
+    "db:generate": "pnpm --filter @saga-agent-ops/db db:generate"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "turbo": "latest",
+    "typescript": "latest",
+    "tsx": "latest"
+  }
+}
